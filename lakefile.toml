@@ -1,0 +1,10 @@
+name = "ex89"
+defaultTargets = ["Ex89"]
+
+[[lean_lib]]
+name = "Ex89"
+precompileModules = true
+
+[[lean_exe]]
+name = "gate"
+root = "Gate"
