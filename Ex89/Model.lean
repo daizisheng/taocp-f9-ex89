@@ -90,8 +90,8 @@ structure RookDissection (u v w : Nat) (ox oy : Int) where
     ∃ x y, x < w ∧ y < w ∧
       (motion (piece x y)).imgX w x y = s ∧ (motion (piece x y)).imgY w x y = t
 
-/-- **Target theorem for `(u, v, w)`**: exercise 89 has a negative answer for this triple, for every
-placement of the two squares. -/
+/-- **Target theorem for `(u, v, w)`**: exercise 89 has a negative answer for this triple. The two
+squares are kept apart by at least one empty column, which is one way to keep them separate. -/
 def NoRookDissection (u v w : Nat) : Prop :=
   ∀ ox oy : Int, (u : Int) < ox → RookDissection u v w ox oy → False
 

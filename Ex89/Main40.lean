@@ -16,5 +16,6 @@ theorem no_rook_dissection_40_42_58 : NoRookDissection 40 42 58 :=
 
 end Ex89
 
+#print Ex89.check_40_42_58._native.native_decide.ax_1_1
 #print axioms Ex89.no_dissection_40_42_58
 #print axioms Ex89.no_rook_dissection_40_42_58
