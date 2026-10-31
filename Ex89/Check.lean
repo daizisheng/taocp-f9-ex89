@@ -82,19 +82,15 @@ def pre (w : Nat) (m : Motion) (a b : Int) : Option (Nat × Nat) :=
   let y := if m.fy then (w : Int) - 1 - q else q
   if 0 ≤ x ∧ x < w ∧ 0 ≤ y ∧ y < w then some (x.toNat, y.toNat) else none
 
-/-- No private cell of slot `l` lands on a private cell's image of slot `k`. -/
-def Cfg.ptd (c : Cfg) (pv : Pv) (k l : Fin 4) (mk ml : Motion) : Bool :=
-  (pv l).all fun p =>
-    match pre c.w mk (ml.imgX c.w p.1 p.2) (ml.imgY c.w p.1 p.2) with
-    | some r => !c.isPriv k r.1 r.2
-    | none => true
+/-! ### Propagation in the bipartite graph between source and target cells
 
-/-- These motions reach all four corners of a square of side `S`. -/
-def cornersOk (w S : Nat) (ms : List Motion) : Bool :=
-  [((0 : Int), (0 : Int)), (0, (S : Int) - 1), ((S : Int) - 1, 0), ((S : Int) - 1, (S : Int) - 1)].all
-    fun t => ms.any fun m => (pre w m t.1 t.2).isSome
+Source cells have numbers below `nS`, and target cells have numbers below `nT`. The table `img`
+of a placement sends a source cell `i` to `j + 1` when the placement moves `i` to the target cell
+`j`, and it gives `0` when it moves `i` outside its target. The table `pre` is the inverse. -/
 
-/-! ### Propagation in the bipartite graph between source and target cells -/
+structure Tab where
+  img : Array Nat
+  pre : Array Nat
 
 def get (a : Array Bool) (i : Nat) : Bool := a.getD i false
 def set (a : Array Bool) (i : Nat) : Array Bool := a.setIfInBounds i true
@@ -107,71 +103,123 @@ structure St where
 def St.add (s : St) (i j : Nat) : St :=
   { mS := set s.mS i, mT := set s.mT j, cnt := s.cnt + 1 }
 
+structure Q where
+  t0 : Tab
+  t1 : Tab
+  t2 : Tab
+  t3 : Tab
+
+@[inline] def live (m : Array Bool) (c : Nat) : Bool := c != 0 && !get m (c - 1)
+
+/-- Count the live candidates among four, and keep the last one. No list is allocated. -/
+@[inline] def count4 (m : Array Bool) (a b c d : Nat) : Nat × Nat :=
+  let (k, l) := if live m a then (1, a) else (0, 0)
+  let (k, l) := if live m b then (k + 1, b) else (k, l)
+  let (k, l) := if live m c then (k + 1, c) else (k, l)
+  if live m d then (k + 1, d) else (k, l)
+
+@[inline] def stepS (q : Q) (st : St) (i : Nat) : Option St :=
+  if get st.mS i then some st else
+  match count4 st.mT (q.t0.img.getD i 0) (q.t1.img.getD i 0) (q.t2.img.getD i 0) (q.t3.img.getD i 0) with
+  | (0, _) => none
+  | (1, c) => some (st.add i (c - 1))
+  | _ => some st
+
+@[inline] def stepT (q : Q) (st : St) (j : Nat) : Option St :=
+  if get st.mT j then some st else
+  match count4 st.mS (q.t0.pre.getD j 0) (q.t1.pre.getD j 0) (q.t2.pre.getD j 0) (q.t3.pre.getD j 0) with
+  | (0, _) => none
+  | (1, c) => some (st.add (c - 1) j)
+  | _ => some st
+
+def passS (q : Q) : List Nat → St → Option St
+  | [], st => some st
+  | i :: l, st =>
+    match stepS q st i with
+    | none => none
+    | some st' => passS q l st'
+
+def passT (q : Q) : List Nat → St → Option St
+  | [], st => some st
+  | j :: l, st =>
+    match stepT q st j with
+    | none => none
+    | some st' => passT q l st'
+
+/-- `true` means that propagation finds a contradiction. -/
+def dead (q : Q) (rS rT : List Nat) : Nat → St → Bool
+  | 0, _ => false
+  | n + 1, st =>
+    match passS q rS st with
+    | none => true
+    | some s1 =>
+      match passT q rT s1 with
+      | none => true
+      | some s2 => if s2.cnt == st.cnt then false else dead q rS rT n s2
+
+def St.init (nS nT : Nat) : St :=
+  { mS := Array.replicate nS false, mT := Array.replicate nT false, cnt := 0 }
+
 /-- The number of a target cell. -/
 def tcode (u v : Nat) (b : Bool) (a c : Nat) : Nat :=
   if b then a * u + c else u * u + a * v + c
 
-/-- A problem: the four motions. -/
-abbrev Q := Fin 4 → Motion
+/-- The tables of motion `m` of slot `k`. -/
+def Cfg.mkTab (c : Cfg) (k : Fin 4) (m : Motion) : Tab :=
+  let S := c.S k
+  let b := c.side k
+  { img := Array.ofFn (n := c.w * c.w) fun i =>
+      let x := i.val / c.w; let y := i.val % c.w
+      let A := m.imgX c.w x y; let B := m.imgY c.w x y
+      if inSq S A B then tcode c.u c.v b A.toNat B.toNat + 1 else 0,
+    pre := Array.ofFn (n := c.u * c.u + c.v * c.v) fun j =>
+      let inU := decide (j.val < c.u * c.u)
+      if inU == b then
+        let j' := if b then j.val else j.val - c.u * c.u
+        match pre c.w m ((j' / S : Nat) : Int) ((j' % S : Nat) : Int) with
+        | some r => r.1 * c.w + r.2 + 1
+        | none => 0
+      else 0 }
 
-def srcCands (c : Cfg) (q : Q) (st : St) (x y : Nat) : List Nat :=
-  (allSlots.filterMap fun k =>
-    let a := (q k).imgX c.w x y
-    let b := (q k).imgY c.w x y
-    if inSq (c.S k) a b then some (tcode c.u c.v (c.side k) a.toNat b.toNat) else none).filter
-      fun t => !get st.mT t
+/-- A placement with its tables. -/
+structure Pack where
+  m : Motion
+  t : Tab
 
-def srcStep (c : Cfg) (q : Q) (st : St) (x y : Nat) : Option St :=
-  if get st.mS (x * c.w + y) then some st else
-  match srcCands c q st x y with
-  | [] => none
-  | [t] => some (st.add (x * c.w + y) t)
-  | _ => some st
+/-- Private cells, in table form: the numbers of the private cells of each slot, and a table
+that says whether a cell is private to a slot. -/
+structure PT where
+  codes : Fin 4 → List Nat
+  isP : Fin 4 → Array Bool
 
-def tgtCands (c : Cfg) (q : Q) (st : St) (b : Bool) (a e : Nat) : List (Nat × Nat) :=
-  (allSlots.filterMap fun k =>
-    if c.side k == b then pre c.w (q k) a e else none).filter
-      fun r => !get st.mS (r.1 * c.w + r.2)
+def Cfg.privTab (c : Cfg) (k : Fin 4) : Array Bool :=
+  Array.ofFn (n := c.w * c.w) fun i => c.isPriv k (i.val / c.w) (i.val % c.w)
 
-def tgtStep (c : Cfg) (q : Q) (st : St) (b : Bool) (a e : Nat) : Option St :=
-  let t := tcode c.u c.v b a e
-  if get st.mT t then some st else
-  match tgtCands c q st b a e with
-  | [] => none
-  | [r] => some (st.add (r.1 * c.w + r.2) t)
-  | _ => some st
+def Cfg.mkPT (c : Cfg) (pv : Pv) : PT :=
+  let c0 := (pv 0).map fun p => p.1 * c.w + p.2
+  let c1 := (pv 1).map fun p => p.1 * c.w + p.2
+  let c2 := (pv 2).map fun p => p.1 * c.w + p.2
+  let c3 := (pv 3).map fun p => p.1 * c.w + p.2
+  let t0 := c.privTab 0; let t1 := c.privTab 1; let t2 := c.privTab 2; let t3 := c.privTab 3
+  { codes := fun k => match k with | 0 => c0 | 1 => c1 | 2 => c2 | 3 => c3,
+    isP := fun k => match k with | 0 => t0 | 1 => t1 | 2 => t2 | 3 => t3 }
 
-def passS (c : Cfg) (q : Q) : List (Nat × Nat) → St → Option St
-  | [], st => some st
-  | p :: ps, st =>
-    match srcStep c q st p.1 p.2 with
-    | none => none
-    | some st' => passS c q ps st'
+/-- No private cell of slot `l` lands on the image of a private cell of slot `k`. -/
+def ptd (pt : PT) (k l : Fin 4) (tk tl : Tab) : Bool :=
+  let isK := pt.isP k
+  (pt.codes l).all fun i =>
+    let c := tl.img.getD i 0
+    c == 0 || (let s := tk.pre.getD (c - 1) 0; s == 0 || !isK.getD (s - 1) false)
 
-def passT (c : Cfg) (q : Q) (b : Bool) : List (Nat × Nat) → St → Option St
-  | [], st => some st
-  | p :: ps, st =>
-    match tgtStep c q st b p.1 p.2 with
-    | none => none
-    | some st' => passT c q b ps st'
+/-- The numbers of the four corners of the target square of slot `k`. -/
+def Cfg.tcorners (c : Cfg) (k : Fin 4) : List Nat :=
+  let S := c.S k
+  let b := c.side k
+  [tcode c.u c.v b 0 0, tcode c.u c.v b 0 (S - 1), tcode c.u c.v b (S - 1) 0, tcode c.u c.v b (S - 1) (S - 1)]
 
-/-- `true` means that propagation finds a contradiction. -/
-def dead (c : Cfg) (q : Q) (gU gV : List (Nat × Nat)) (gW : List (Nat × Nat)) : Nat → St → Bool
-  | 0, _ => false
-  | n + 1, st =>
-    match passS c q gW st with
-    | none => true
-    | some s1 =>
-      match passT c q true gU s1 with
-      | none => true
-      | some s2 =>
-        match passT c q false gV s2 with
-        | none => true
-        | some s3 => if s3.cnt == st.cnt then false else dead c q gU gV gW n s3
-
-def St.init (c : Cfg) : St :=
-  { mS := Array.replicate (c.w * c.w) false,
-    mT := Array.replicate (c.u * c.u + c.v * c.v) false, cnt := 0 }
+/-- These placements reach all four corners. -/
+def cornersOk (cs : List Nat) (ms : List Tab) : Bool :=
+  cs.all fun t => ms.any fun m => m.pre.getD t 0 != 0
 
 /-- Test a list in parallel. -/
 def parAll {α : Type} (l : List α) (f : α → Bool) : Bool :=
@@ -184,33 +232,66 @@ theorem parAll_eq {α : Type} (l : List α) (f : α → Bool) : parAll l f = l.a
     simp only [parAll, List.map_cons, List.all_cons] at ih ⊢
     rw [ih]; rfl
 
-/-- `a`, `b` go to one square and `c`, `d` go to the other one. -/
-def Cfg.pairs (cf : Cfg) (pv : Pv) (a b : Fin 4) : List (Motion × Motion) :=
-  let Lb := cf.L pv b
-  (cf.L pv a).flatMap fun p => (Lb.filter fun r =>
-    cf.ptd pv a b p r && cornersOk cf.w (cf.S a) [p, r]).map fun r => (p, r)
+def Cfg.packs (cf : Cfg) (pv : Pv) (k : Fin 4) : List Pack :=
+  (cf.L pv k).map fun m => { m, t := cf.mkTab k m }
 
-def mk22 (a b c : Fin 4) (pa pb pc pd : Motion) : Q :=
-  fun k => if k = a then pa else if k = b then pb else if k = c then pc else pd
+/-- `a`, `b` go to one square and `c`, `d` go to the other one. -/
+def Cfg.pairs (cf : Cfg) (pv : Pv) (pt : PT) (a b : Fin 4) : List (Pack × Pack) :=
+  let Lb := cf.packs pv b
+  let cs := cf.tcorners a
+  (cf.packs pv a).flatMap fun p => (Lb.filter fun r =>
+    ptd pt a b p.t r.t && cornersOk cs [p.t, r.t]).map fun r => (p, r)
+
+def Cfg.nS (cf : Cfg) : Nat := cf.w * cf.w
+def Cfg.nT (cf : Cfg) : Nat := cf.u * cf.u + cf.v * cf.v
 
 def check22 (cf : Cfg) (a b c d : Fin 4) : Bool :=
-  let gW := grid cf.w; let gU := grid cf.u; let gV := grid cf.v
+  let rS := List.range cf.nS; let rT := List.range cf.nT
   let pv := cf.mkPv
-  let P2 := cf.pairs pv c d
-  parAll (cf.pairs pv a b) fun pq => P2.all fun rs =>
-    dead cf (mk22 a b c pq.1 pq.2 rs.1 rs.2) gU gV gW (cf.w * cf.w) (St.init cf)
+  let pt := cf.mkPT pv
+  let P2 := cf.pairs pv pt c d
+  parAll (cf.pairs pv pt a b) fun pq => P2.all fun rs =>
+    dead ⟨pq.1.t, pq.2.t, rs.1.t, rs.2.t⟩ rS rT cf.nS (St.init cf.nS cf.nT)
+
+/-- Apply a function to a list in parallel. -/
+def parMap {α β : Type} (l : List α) (f : α → β) : List β :=
+  (l.map fun x => Task.spawn fun _ => f x).map fun t => t.get
+
+theorem parMap_eq {α β : Type} (l : List α) (f : α → β) : parMap l f = l.map f := by
+  induction l with
+  | nil => rfl
+  | cons a l ih =>
+    simp only [parMap, List.map_cons] at ih ⊢
+    rw [ih]; rfl
+
+/-- A number for a motion, used to mark motions in a table. Two motions with the same number would
+only make the search test more cases, so the correctness of the search does not depend on it. -/
+def motionId (w : Nat) (m : Motion) : Nat :=
+  ((m.dx + w).toNat * (2 * w) + (m.dy + w).toNat) * 8 +
+    (if m.sw then 4 else 0) + (if m.fx then 2 else 0) + (if m.fy then 1 else 0)
+
+/-- Mark the motions of a list. -/
+def maskOf (n w : Nat) (l : List Pack) : Array Bool :=
+  l.foldl (fun a p => set a (motionId w p.m % n)) (Array.replicate n false)
 
 /-- Slot 0 is one whole square, and slots 1, 2, 3 go to the other square. -/
 def check13 (cf : Cfg) : Bool :=
-  let gW := grid cf.w; let gU := grid cf.u; let gV := grid cf.v
+  let rS := List.range cf.nS; let rT := List.range cf.nT
   let pv := cf.mkPv
-  let L2 := cf.L pv 2; let L3 := cf.L pv 3
-  parAll (cf.L pv 1) fun p1 =>
-    let l2 := L2.filter fun p2 => cf.ptd pv 1 2 p1 p2
-    let l3 := L3.filter fun p3 => cf.ptd pv 3 1 p3 p1
-    l2.all fun p2 =>
-      (l3.filter fun p3 => cf.ptd pv 3 2 p3 p2 && cornersOk cf.w (cf.S 1) [p1, p2, p3]).all fun p3 =>
-        dead cf (mk22 0 1 2 idMotion p1 p2 p3) gU gV gW (cf.w * cf.w) (St.init cf)
+  let t0 := cf.mkTab 0 idMotion
+  let L2 := cf.packs pv 2; let L3 := cf.packs pv 3
+  let n := 32 * cf.w * cf.w + 8
+  let pt := cf.mkPT pv
+  let cs := cf.tcorners 1
+  let P23 := parMap L2 fun p2 => (p2, L3.filter fun p3 => ptd pt 3 2 p3.t p2.t)
+  parAll (cf.packs pv 1) fun p1 =>
+    let mask := maskOf n cf.w (L3.filter fun p3 => ptd pt 3 1 p3.t p1.t)
+    P23.all fun e =>
+      !ptd pt 1 2 p1.t e.1.t ||
+      e.2.all fun p3 =>
+        !get mask (motionId cf.w p3.m % n) ||
+        !cornersOk cs [p1.t, e.1.t, p3.t] ||
+        dead ⟨t0, p1.t, e.1.t, p3.t⟩ rS rT cf.nS (St.init cf.nS cf.nT)
 
 def cfgDiag (u v w : Nat) : Cfg :=
   { u, v, w, side := fun k => k == 1 || k == 3, ids := fun k => k == 0 || k == 1, fixed := fun _ => false }
