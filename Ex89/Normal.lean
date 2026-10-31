@@ -166,7 +166,8 @@ theorem no_dissection_of_check {u v w : Nat} (hu : 0 < u) (hv : 0 < v) (huw : u 
     (h : checkAll u v w = true) : NoDissection u v w := by
   intro D0
   have hw : 0 < w := by omega
-  simp only [checkAll, Bool.and_eq_true] at h
+  rw [checkAll_eq] at h
+  simp only [Bool.and_eq_true] at h
   obtain ⟨⟨⟨hd, ha⟩, hU⟩, hV⟩ := h
   obtain ⟨D, hA⟩ := exists_canon D0
   obtain ⟨E, es, ec⟩ := exists_named D huw hvw

@@ -313,7 +313,7 @@ theorem Fits.corners_true (F : Fits c D) (k : Fin 4) {ms : List Tab}
 
 theorem Fits.pack_mem (F : Fits c D) (k : Fin 4) :
     (⟨D.motion k, c.mkTab k (D.motion k)⟩ : Pack) ∈ c.packs c.mkPv k := by
-  simp only [Cfg.packs, List.mem_map]
+  simp only [Cfg.packs, parMap_eq, List.mem_map]
   exact ⟨_, F.mem_L k, rfl⟩
 
 theorem Fits.pair_mem (F : Fits c D) {a b : Fin 4} (hne : a ≠ b) (hs : c.side a = c.side b)
@@ -331,7 +331,8 @@ theorem Fits.check22_false (F : Fits c D) {a b e d : Fin 4}
     (h1 : a ≠ b) (h2 : e ≠ d) (s1 : c.side a = c.side b) (s2 : c.side e = c.side d)
     (g1 : ∀ j, c.side j = c.side a → j = a ∨ j = b) (g2 : ∀ j, c.side j = c.side e → j = e ∨ j = d)
     (h : check22 c a b e d = true) : False := by
-  simp only [check22, parAll_eq, List.all_eq_true] at h
+  have hs : ∀ (f : Unit → List (Pack × Pack)), (Task.spawn f).get = f () := fun _ => rfl
+  simp only [check22, hs, parAll_eq, List.all_eq_true] at h
   have := h _ (F.pair_mem h1 s1 g1) _ (F.pair_mem h2 s2 g2)
   have hd := F.not_dead ⟨c.mkTab a (D.motion a), c.mkTab b (D.motion b), c.mkTab e (D.motion e),
     c.mkTab d (D.motion d)⟩ (by

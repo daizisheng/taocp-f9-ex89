@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-"""Check that every ```lean block of README.md occurs word for word in Ex89/Model.lean or Ex89/Main.lean."""
+"""Check that every ```lean block of README.md occurs word for word in Ex89/Model.lean, Ex89/Main.lean or Ex89/Main40.lean."""
 import re, sys
 readme = open('README.md').read()
 src = open('Ex89/Model.lean').read()
-try:
-    src += open('Ex89/Main.lean').read()
-except FileNotFoundError:
-    pass
+src += open('Ex89/Main.lean').read()
+src += open('Ex89/Main40.lean').read()
 blocks = re.findall(r'```lean\n(.*?)```', readme, re.S)
 bad = [b for b in blocks if b.strip() not in src]
 for b in bad:

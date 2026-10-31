@@ -16,6 +16,7 @@ def main (a : List String) : IO Unit := do
   IO.println ((c.pairs pv (c.mkPT pv) 0 2).length,(c.pairs pv (c.mkPT pv) 1 3).length)
   let c := cfgAdj us vs ws; let pv := c.mkPv
   IO.println ((c.pairs pv (c.mkPT pv) 0 1).length,(c.pairs pv (c.mkPT pv) 2 3).length)
+  (← IO.getStdout).flush
   timed "diag" fun _ => check22 (cfgDiag us vs ws) 0 2 1 3
   timed "adj " fun _ => check22 (cfgAdj us vs ws) 0 1 2 3
   timed "1+3 " fun _ => check13 (cfgU us vs ws)

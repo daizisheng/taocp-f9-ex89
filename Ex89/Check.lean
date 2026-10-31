@@ -232,8 +232,19 @@ theorem parAll_eq {α : Type} (l : List α) (f : α → Bool) : parAll l f = l.a
     simp only [parAll, List.map_cons, List.all_cons] at ih ⊢
     rw [ih]; rfl
 
+/-- Apply a function to a list in parallel. -/
+def parMap {α β : Type} (l : List α) (f : α → β) : List β :=
+  (l.map fun x => Task.spawn fun _ => f x).map fun t => t.get
+
+theorem parMap_eq {α β : Type} (l : List α) (f : α → β) : parMap l f = l.map f := by
+  induction l with
+  | nil => rfl
+  | cons a l ih =>
+    simp only [parMap, List.map_cons] at ih ⊢
+    rw [ih]; rfl
+
 def Cfg.packs (cf : Cfg) (pv : Pv) (k : Fin 4) : List Pack :=
-  (cf.L pv k).map fun m => { m, t := cf.mkTab k m }
+  parMap (cf.L pv k) fun m => { m, t := cf.mkTab k m }
 
 /-- `a`, `b` go to one square and `c`, `d` go to the other one. -/
 def Cfg.pairs (cf : Cfg) (pv : Pv) (pt : PT) (a b : Fin 4) : List (Pack × Pack) :=
@@ -249,20 +260,11 @@ def check22 (cf : Cfg) (a b c d : Fin 4) : Bool :=
   let rS := List.range cf.nS; let rT := List.range cf.nT
   let pv := cf.mkPv
   let pt := cf.mkPT pv
-  let P2 := cf.pairs pv pt c d
-  parAll (cf.pairs pv pt a b) fun pq => P2.all fun rs =>
+  let tP2 := Task.spawn fun _ => cf.pairs pv pt c d
+  let P1 := cf.pairs pv pt a b
+  let P2 := tP2.get
+  parAll P1 fun pq => P2.all fun rs =>
     dead ⟨pq.1.t, pq.2.t, rs.1.t, rs.2.t⟩ rS rT cf.nS (St.init cf.nS cf.nT)
-
-/-- Apply a function to a list in parallel. -/
-def parMap {α β : Type} (l : List α) (f : α → β) : List β :=
-  (l.map fun x => Task.spawn fun _ => f x).map fun t => t.get
-
-theorem parMap_eq {α β : Type} (l : List α) (f : α → β) : parMap l f = l.map f := by
-  induction l with
-  | nil => rfl
-  | cons a l ih =>
-    simp only [parMap, List.map_cons] at ih ⊢
-    rw [ih]; rfl
 
 /-- A number for a motion, used to mark motions in a table. Two motions with the same number would
 only make the search test more cases, so the correctness of the search does not depend on it. -/
@@ -304,9 +306,31 @@ def cfgU (u v w : Nat) : Cfg :=
 def cfgV (u v w : Nat) : Cfg :=
   { u, v, w, side := fun k => k != 0, ids := fun k => k == 1, fixed := fun k => k == 0 }
 
-/-- The whole search. -/
+/-- One of the four cases. -/
+def checkCase (u v w : Nat) : Nat → Bool
+  | 0 => check22 (cfgDiag u v w) 0 2 1 3
+  | 1 => check22 (cfgAdj u v w) 0 1 2 3
+  | 2 => check13 (cfgU u v w)
+  | _ => check13 (cfgV u v w)
+
+/-- Test a list in parallel, with one dedicated thread for each element. -/
+def parAllD {α : Type} (l : List α) (f : α → Bool) : Bool :=
+  (l.map fun x => Task.spawn (prio := Task.Priority.dedicated) fun _ => f x).all fun t => t.get
+
+theorem parAllD_eq {α : Type} (l : List α) (f : α → Bool) : parAllD l f = l.all f := by
+  induction l with
+  | nil => rfl
+  | cons a l ih =>
+    simp only [parAllD, List.map_cons, List.all_cons] at ih ⊢
+    rw [ih]; rfl
+
+/-- The whole search. The four cases run at the same time. -/
 def checkAll (u v w : Nat) : Bool :=
-  check22 (cfgDiag u v w) 0 2 1 3 && check22 (cfgAdj u v w) 0 1 2 3 &&
-  check13 (cfgU u v w) && check13 (cfgV u v w)
+  parAllD [0, 1, 2, 3] (checkCase u v w)
+
+theorem checkAll_eq (u v w : Nat) : checkAll u v w =
+    (check22 (cfgDiag u v w) 0 2 1 3 && check22 (cfgAdj u v w) 0 1 2 3 &&
+     check13 (cfgU u v w) && check13 (cfgV u v w)) := by
+  simp [checkAll, parAllD_eq, checkCase, Bool.and_assoc]
 
 end Ex89
