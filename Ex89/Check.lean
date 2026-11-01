@@ -5,6 +5,15 @@ Each corner of the `w × w` square lies in its own piece, called slot `k` below.
 -/
 namespace Ex89
 
+unsafe def persistImpl {α : Type} (a : α) : α := unsafeBaseIO (Runtime.markPersistent a)
+
+/-- The identity function. In the compiled program the value is also marked as persistent: its
+reference count is never updated again, so that the threads do not fight over one cache line.
+The proofs see only the identity. -/
+@[implemented_by persistImpl] def persist {α : Type} (a : α) : α := a
+
+theorem persist_eq {α : Type} (a : α) : persist a = a := rfl
+
 def allSlots : List (Fin 4) := [0, 1, 2, 3]
 
 def cornerX (w : Nat) : Fin 4 → Nat
@@ -65,12 +74,50 @@ def motions (w S : Nat) : List Motion :=
 
 def idMotion : Motion := { sw := false, fx := false, fy := false, dx := 0, dy := 0 }
 
+/-- Cut a list into pieces of length `n`. -/
+def chunksF {α : Type} (n : Nat) : Nat → List α → List (List α)
+  | 0, l => [l]
+  | f + 1, l =>
+    match l with
+    | [] => []
+    | a :: t => (a :: t).take n :: chunksF n f ((a :: t).drop n)
+
+theorem flatten_chunksF {α : Type} (n f : Nat) (l : List α) : (chunksF n f l).flatten = l := by
+  induction f generalizing l with
+  | zero => simp [chunksF]
+  | succ f ih =>
+    cases l with
+    | nil => rfl
+    | cons a t =>
+      simp only [chunksF, List.flatten_cons, ih, List.take_append_drop]
+
+/-- Filter a list in parallel, by pieces. -/
+def parFilterM (p : Motion → Bool) (l : List Motion) : List Motion :=
+  (((chunksF 512 l.length l).map fun c => Task.spawn fun _ => c.filter p).map Task.get).flatten
+
+theorem filter_flatten_eq (p : Motion → Bool) (ch : List (List Motion)) :
+    (ch.map (List.filter p)).flatten = ch.flatten.filter p := by
+  induction ch with
+  | nil => rfl
+  | cons c ch ih => simp only [List.map_cons, List.flatten_cons, List.filter_append, ih]
+
+theorem parFilterM_eq (p : Motion → Bool) (l : List Motion) : parFilterM p l = l.filter p := by
+  have e : ∀ ch : List (List Motion), (ch.map fun c => Task.spawn fun _ => c.filter p).map Task.get =
+      ch.map (List.filter p) := by
+    intro ch
+    induction ch with
+    | nil => rfl
+    | cons c ch ih => simp only [List.map_cons, ih]; rfl
+  unfold parFilterM
+  rw [e (chunksF 512 l.length l), filter_flatten_eq, flatten_chunksF]
+
 /-- The possible placements of slot `k`. -/
 def Cfg.L (c : Cfg) (pv : Pv) (k : Fin 4) : List Motion :=
   if c.fixed k then [idMotion] else
-  (motions c.w (c.S k)).filter fun m =>
+  parFilterM (fun m =>
     (!c.ids k || (!m.sw && !m.fx && !m.fy)) &&
-    (pv k).all fun p => inSq (c.S k) (m.imgX c.w p.1 p.2) (m.imgY c.w p.1 p.2)
+    (pv k).all fun p => inSq (c.S k) (m.imgX c.w p.1 p.2) (m.imgY c.w p.1 p.2))
+    (motions c.w (c.S k))
 
 /-- The cell of the `w × w` square that `m` sends to `(a, b)`, if there is one. -/
 def pre (w : Nat) (m : Motion) (a b : Int) : Option (Nat × Nat) :=
@@ -250,19 +297,25 @@ def Cfg.packs (cf : Cfg) (pv : Pv) (k : Fin 4) : List Pack :=
 def Cfg.pairs (cf : Cfg) (pv : Pv) (pt : PT) (a b : Fin 4) : List (Pack × Pack) :=
   let Lb := cf.packs pv b
   let cs := cf.tcorners a
-  (cf.packs pv a).flatMap fun p => (Lb.filter fun r =>
-    ptd pt a b p.t r.t && cornersOk cs [p.t, r.t]).map fun r => (p, r)
+  (parMap (cf.packs pv a) fun p => (Lb.filter fun r =>
+    ptd pt a b p.t r.t && cornersOk cs [p.t, r.t]).map fun r => (p, r)).flatten
+
+theorem Cfg.pairs_eq (cf : Cfg) (pv : Pv) (pt : PT) (a b : Fin 4) :
+    cf.pairs pv pt a b = (cf.packs pv a).flatMap fun p => ((cf.packs pv b).filter fun r =>
+      ptd pt a b p.t r.t && cornersOk (cf.tcorners a) [p.t, r.t]).map fun r => (p, r) := by
+  simp only [Cfg.pairs, parMap_eq, List.flatMap_def]
 
 def Cfg.nS (cf : Cfg) : Nat := cf.w * cf.w
 def Cfg.nT (cf : Cfg) : Nat := cf.u * cf.u + cf.v * cf.v
 
 def check22 (cf : Cfg) (a b c d : Fin 4) : Bool :=
-  let rS := List.range cf.nS; let rT := List.range cf.nT
-  let pv := cf.mkPv
-  let pt := cf.mkPT pv
+  let cf := persist cf
+  let rS := persist (List.range cf.nS); let rT := persist (List.range cf.nT)
+  let pv := persist cf.mkPv
+  let pt := persist (cf.mkPT pv)
   let tP2 := Task.spawn fun _ => cf.pairs pv pt c d
-  let P1 := cf.pairs pv pt a b
-  let P2 := tP2.get
+  let P1 := persist (cf.pairs pv pt a b)
+  let P2 := persist tP2.get
   parAll P1 fun pq => P2.all fun rs =>
     dead ⟨pq.1.t, pq.2.t, rs.1.t, rs.2.t⟩ rS rT cf.nS (St.init cf.nS cf.nT)
 
@@ -278,17 +331,24 @@ def maskOf (n w : Nat) (l : List Pack) : Array Bool :=
 
 /-- Slot 0 is one whole square, and slots 1, 2, 3 go to the other square. -/
 def check13 (cf : Cfg) : Bool :=
-  let rS := List.range cf.nS; let rT := List.range cf.nT
-  let pv := cf.mkPv
-  let t0 := cf.mkTab 0 idMotion
-  let L2 := cf.packs pv 2; let L3 := cf.packs pv 3
+  let cf := persist cf
+  let rS := persist (List.range cf.nS); let rT := persist (List.range cf.nT)
+  let pv := persist cf.mkPv
+  let t0 := persist (cf.mkTab 0 idMotion)
+  let L2 := persist (cf.packs pv 2); let L3 := persist (cf.packs pv 3)
   let n := 32 * cf.w * cf.w + 8
-  let pt := cf.mkPT pv
-  let cs := cf.tcorners 1
-  let P23 := parMap L2 fun p2 => (p2, L3.filter fun p3 => ptd pt 3 2 p3.t p2.t)
-  parAll (cf.packs pv 1) fun p1 =>
-    let mask := maskOf n cf.w (L3.filter fun p3 => ptd pt 3 1 p3.t p1.t)
-    P23.all fun e =>
+  let pt := persist (cf.mkPT pv)
+  let cs := persist (cf.tcorners 1)
+  let P23 := persist (parMap L2 fun p2 => (p2, L3.filter fun p3 => ptd pt 3 2 p3.t p2.t))
+  let P1M := persist (parMap (cf.packs pv 1) fun p1 =>
+    (p1, maskOf n cf.w (L3.filter fun p3 => ptd pt 3 1 p3.t p1.t)))
+  let CH := persist (chunksF 256 P23.length P23)
+  -- One task for each first piece and each short part of the second pieces: the amount of work
+  -- depends very much on the first piece, so one task for each first piece would be unbalanced.
+  parAll (P1M.flatMap fun pm => CH.map fun ch => (pm, ch)) fun x =>
+    let p1 := x.1.1
+    let mask := x.1.2
+    x.2.all fun e =>
       !ptd pt 1 2 p1.t e.1.t ||
       e.2.all fun p3 =>
         !get mask (motionId cf.w p3.m % n) ||

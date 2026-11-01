@@ -66,7 +66,7 @@ theorem Fits.mem_L (F : Fits c D) (k : Fin 4) : D.motion k ∈ c.L c.mkPv k := b
   next hf => simp [F.hfix k hf]
   next =>
     obtain ⟨cx, cy⟩ := F.corner_lt k
-    simp only [List.mem_filter, Bool.and_eq_true, List.all_eq_true]
+    simp only [parFilterM_eq, List.mem_filter, Bool.and_eq_true, List.all_eq_true]
     refine ⟨mem_motions _ (Motion.shift_bound _ cx cy (F.maps_k cx cy (F.hcorner k))), ?_, ?_⟩
     · cases hi : c.ids k
       · simp
@@ -320,7 +320,7 @@ theorem Fits.pair_mem (F : Fits c D) {a b : Fin 4} (hne : a ≠ b) (hs : c.side 
     (hgroup : ∀ j, c.side j = c.side a → j = a ∨ j = b) :
     ((⟨D.motion a, c.mkTab a (D.motion a)⟩ : Pack), (⟨D.motion b, c.mkTab b (D.motion b)⟩ : Pack)) ∈
       c.pairs c.mkPv (c.mkPT c.mkPv) a b := by
-  simp only [Cfg.pairs, List.mem_flatMap, List.mem_map, List.mem_filter, Bool.and_eq_true, Prod.mk.injEq]
+  simp only [Cfg.pairs_eq, List.mem_flatMap, List.mem_map, List.mem_filter, Bool.and_eq_true, Prod.mk.injEq]
   refine ⟨_, F.pack_mem a, _, ⟨F.pack_mem b, F.ptd_true hne hs, ?_⟩, rfl, rfl⟩
   apply F.corners_true
   intro j hj
@@ -332,7 +332,7 @@ theorem Fits.check22_false (F : Fits c D) {a b e d : Fin 4}
     (g1 : ∀ j, c.side j = c.side a → j = a ∨ j = b) (g2 : ∀ j, c.side j = c.side e → j = e ∨ j = d)
     (h : check22 c a b e d = true) : False := by
   have hs : ∀ (f : Unit → List (Pack × Pack)), (Task.spawn f).get = f () := fun _ => rfl
-  simp only [check22, hs, parAll_eq, List.all_eq_true] at h
+  simp only [check22, persist_eq, hs, parAll_eq, List.all_eq_true] at h
   have := h _ (F.pair_mem h1 s1 g1) _ (F.pair_mem h2 s2 g2)
   have hd := F.not_dead ⟨c.mkTab a (D.motion a), c.mkTab b (D.motion b), c.mkTab e (D.motion e),
     c.mkTab d (D.motion d)⟩ (by
@@ -371,7 +371,7 @@ theorem Fits.check13_false (F : Fits c D)
     (s1 : c.side 1 = c.side 2) (s2 : c.side 1 = c.side 3)
     (g : ∀ j, c.side j = c.side 1 → j = 1 ∨ j = 2 ∨ j = 3) (hf : c.fixed 0 = true)
     (h : check13 c = true) : False := by
-  simp only [check13, parAll_eq, parMap_eq, List.all_eq_true, List.mem_map] at h
+  simp only [check13, persist_eq, parAll_eq, parMap_eq, List.all_eq_true] at h
   have hd := F.not_dead ⟨c.mkTab 0 (D.motion 0), c.mkTab 1 (D.motion 1), c.mkTab 2 (D.motion 2),
     c.mkTab 3 (D.motion 3)⟩ (by
       intro k
@@ -390,7 +390,20 @@ theorem Fits.check13_false (F : Fits c D)
     intro j hj
     rcases g j hj with rfl | rfl | rfl <;> simp [P1, P2, P3])
   have hp12 : ptd (c.mkPT c.mkPv) 1 2 P1.t P2.t = true := F.ptd_true (by decide) s1
-  have := h P1 (F.pack_mem 1) _ ⟨P2, F.pack_mem 2, rfl⟩
+  have hE : (P2, (c.packs c.mkPv 3).filter fun p3 => ptd (c.mkPT c.mkPv) 3 2 p3.t P2.t) ∈
+      (c.packs c.mkPv 2).map fun p2 => (p2, (c.packs c.mkPv 3).filter
+        fun p3 => ptd (c.mkPT c.mkPv) 3 2 p3.t p2.t) :=
+    List.mem_map.2 ⟨P2, F.pack_mem 2, rfl⟩
+  have hE2 : (P2, (c.packs c.mkPv 3).filter fun p3 => ptd (c.mkPT c.mkPv) 3 2 p3.t P2.t) ∈
+      (chunksF 256 ((c.packs c.mkPv 2).map fun p2 => (p2, (c.packs c.mkPv 3).filter
+        fun p3 => ptd (c.mkPT c.mkPv) 3 2 p3.t p2.t)).length
+        ((c.packs c.mkPv 2).map fun p2 => (p2, (c.packs c.mkPv 3).filter
+        fun p3 => ptd (c.mkPT c.mkPv) 3 2 p3.t p2.t))).flatten := by
+    rw [flatten_chunksF]; exact hE
+  obtain ⟨ch, hch, he⟩ := List.mem_flatten.1 hE2
+  have := h ((P1, maskOf (32 * c.w * c.w + 8) c.w ((c.packs c.mkPv 3).filter
+      fun p3 => ptd (c.mkPT c.mkPv) 3 1 p3.t P1.t)), ch)
+    (List.mem_flatMap.2 ⟨_, List.mem_map.2 ⟨P1, F.pack_mem 1, rfl⟩, List.mem_map.2 ⟨ch, hch, rfl⟩⟩) _ he
   simp only [hp12, Bool.not_true, Bool.false_or, List.all_eq_true] at this
   have := this P3 h32
   rw [get_maskOf (by omega) h31, hc] at this

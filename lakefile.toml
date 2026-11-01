@@ -7,7 +7,7 @@ precompileModules = true
 
 [[lean_lib]]
 name = "Ex89Main"
-roots = ["Ex89.Main", "Ex89.Main40"]
+roots = ["Ex89.Main", "Ex89.Main40", "Ex89.Main48", "Ex89.Main28", "Ex89.Main33"]
 moreLeanArgs = ["-j16"]
 
 [[lean_exe]]
@@ -17,3 +17,7 @@ root = "Gate"
 [[lean_exe]]
 name = "gate2"
 root = "Gate2"
+
+[[lean_exe]]
+name = "gate4"
+root = "Gate4"

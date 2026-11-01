@@ -5,6 +5,9 @@ readme = open('README.md').read()
 src = open('Ex89/Model.lean').read()
 src += open('Ex89/Main.lean').read()
 src += open('Ex89/Main40.lean').read()
+src += open('Ex89/Main48.lean').read()
+src += open('Ex89/Main28.lean').read()
+src += open('Ex89/Main33.lean').read()
 blocks = re.findall(r'```lean\n(.*?)```', readme, re.S)
 bad = [b for b in blocks if b.strip() not in src]
 for b in bad:
