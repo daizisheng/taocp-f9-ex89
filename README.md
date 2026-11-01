@@ -291,5 +291,7 @@ lake build Ex89.Main33         # (33, 56, 65)
 python3 scripts/check_readme.py
 ```
 
-`lake build` with no argument runs all of them. The number of threads is the option `-j16` in
-`lakefile.toml`, and a large search needs at least the memory given above.
+`lake build` with no argument runs all of them at the same time. On the machine above, with `-j384`,
+a fresh clone took 2604 s of wall time and 937,465 s of CPU time, because the five modules compete for
+the cores. The number of threads is the option `-j16` in `lakefile.toml`, and a large search needs at
+least the memory given above.
