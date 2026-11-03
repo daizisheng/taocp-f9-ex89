@@ -13,42 +13,13 @@ def ConnP (w : Nat) (p : Nat → Nat → Fin 4) : Prop :=
 
 /-! ### The search -/
 
-@[inline] def deadR (c : Cfg) (q : Q) (rS rT : List Nat) : Bool :=
+def deadR (c : Cfg) (q : Q) (rS rT : List Nat) : Bool :=
   dead q rS rT c.nS (St.init c.nS c.nT) || testRook c q
 
 def check22R (cf : Cfg) (a b e d : Fin 4) (ord : Tab → Tab → Tab → Tab → Q) : Bool :=
-  let cf := persist cf
-  let rS := persist (List.range cf.nS); let rT := persist (List.range cf.nT)
-  let pv := persist cf.mkPv
-  let pt := persist (cf.mkPT pv)
-  let tP2 := Task.spawn fun _ => cf.pairs pv pt e d
-  let P1 := persist (cf.pairs pv pt a b)
-  let P2 := persist tP2.get
-  parAll P1 fun pq => P2.all fun rs =>
-    deadR cf (ord pq.1.t pq.2.t rs.1.t rs.2.t) rS rT
+  check22G cf a b e d ord deadR
 
-def check13R (cf : Cfg) : Bool :=
-  let cf := persist cf
-  let rS := persist (List.range cf.nS); let rT := persist (List.range cf.nT)
-  let pv := persist cf.mkPv
-  let t0 := persist (cf.mkTab 0 idMotion)
-  let L2 := persist (cf.packs pv 2); let L3 := persist (cf.packs pv 3)
-  let n := 32 * cf.w * cf.w + 8
-  let pt := persist (cf.mkPT pv)
-  let cs := persist (cf.tcorners 1)
-  let P23 := persist (parMap L2 fun p2 => (p2, L3.filter fun p3 => ptd pt 3 2 p3.t p2.t))
-  let P1M := persist (parMap (cf.packs pv 1) fun p1 =>
-    (p1, maskOf n cf.w (L3.filter fun p3 => ptd pt 3 1 p3.t p1.t)))
-  let CH := persist (chunksF 256 P23.length P23)
-  parAll (P1M.flatMap fun pm => CH.map fun ch => (pm, ch)) fun x =>
-    let p1 := x.1.1
-    let mask := x.1.2
-    x.2.all fun e =>
-      !ptd pt 1 2 p1.t e.1.t ||
-      e.2.all fun p3 =>
-        !get mask (motionId cf.w p3.m % n) ||
-        !cornersOk cs [p1.t, e.1.t, p3.t] ||
-        deadR cf ⟨t0, p1.t, e.1.t, p3.t⟩ rS rT
+def check13R (cf : Cfg) : Bool := check13G cf deadR
 
 def ordDiag (ta tb te td : Tab) : Q := ⟨ta, te, tb, td⟩
 def ordAdj (ta tb te td : Tab) : Q := ⟨ta, tb, te, td⟩
@@ -127,11 +98,6 @@ theorem imgAt_trueQ (c : Cfg) (D : Dissection c.u c.v c.w) (i : Nat) (k : Fin 4)
 def trueSl (c : Cfg) (D : Dissection c.u c.v c.w) (i : Nat) : Nat :=
   (D.piece (i / c.w) (i % c.w)).val
 
-def trueTau (c : Cfg) (D : Dissection c.u c.v c.w) (i : Nat) : Nat :=
-  let x := i / c.w; let y := i % c.w
-  tcode c.u c.v (c.side (D.piece x y)) ((D.motion (D.piece x y)).imgX c.w x y).toNat
-    ((D.motion (D.piece x y)).imgY c.w x y).toNat
-
 theorem Fits.code_eq (_F : Fits c D) {x y : Nat} (hx : x < c.w) (hy : y < c.w) :
     (x * c.w + y) / c.w = x ∧ (x * c.w + y) % c.w = y := by
   have hi := code_lt hx hy
@@ -143,9 +109,63 @@ theorem ccOf_eq (w : Nat) (k : Fin 4) : ccOf w k.val = cornerX w k * w + cornerY
   revert k
   apply slot_cases <;> simp [ccOf, cornerX, cornerY]
 
-theorem Fits.trueEdge (_F : Fits c D) {i : Nat} (hi : i < c.w * c.w) : TrueEdge c D i (trueTau c D i) := by
-  obtain ⟨hx, hy, he⟩ := code_split hi
-  exact ⟨_, _, hx, hy, he.symm, rfl⟩
+/-- A motion keeps rook neighbors adjacent. -/
+theorem motion_adj (m : Motion) (w : Nat) {x y x' y' : Nat} (hx : x < w) (hy : y < w) (hx' : x' < w)
+    (hy' : y' < w) (h : NoCross.Adj ((x : Int), (y : Int)) ((x' : Int), (y' : Int))) :
+    NoCross.Adj (m.imgX w x y, m.imgY w x y) (m.imgX w x' y', m.imgY w x' y') := by
+  simp only [NoCross.Adj, Motion.imgX, Motion.imgY] at *
+  cases m.sw <;> cases m.fx <;> cases m.fy <;> simp only [Bool.false_eq_true, if_true, if_false] <;> omega
+
+theorem tcOf_tcode {u v : Nat} {b : Bool} {a e : Nat} (ha : a < sideOf u v b) (he : e < sideOf u v b) :
+    tcOf u v (tcode u v b a e) =
+      if b then ((a : Int), (e : Int)) else (((a + u + 2 : Nat) : Int), (e : Int)) := by
+  cases b
+  · have hv : e < v := by simpa [sideOf] using he
+    have d := div_mod_of (w := v) (q := a) hv
+    rw [Nat.mul_comm] at d
+    have hn : ¬ (u * u + (a * v + e) < u * u) := by omega
+    simp only [tcode, tcOf, Bool.false_eq_true, if_false, Nat.add_assoc]
+    rw [if_neg hn, Nat.add_sub_cancel_left, d.1, d.2]
+  · have hu : e < u := by simpa [sideOf] using he
+    have hau : a < u := by simpa [sideOf] using ha
+    simp only [tcode, tcOf, if_true]
+    have hlt := code_lt hau hu
+    simp only [hlt, if_true]
+    have d := div_mod_of (w := u) (q := a) hu
+    rw [Nat.mul_comm] at d
+    rw [d.1, d.2]
+
+theorem tcOf_inj {u v t t' : Nat} (hv : 0 < v) (ht : t < u * u + v * v) (ht' : t' < u * u + v * v)
+    (h : tcOf u v t = tcOf u v t') : t = t' := by
+  have small : ∀ {s : Nat}, s < u * u → s / u < u := fun hs => Nat.div_lt_of_lt_mul hs
+  unfold tcOf at h
+  split at h <;> split at h
+  next h1 h2 =>
+    simp only [Prod.mk.injEq, Int.natCast_inj] at h
+    rw [← Nat.div_add_mod t u, ← Nat.div_add_mod t' u, h.1, h.2]
+  next h1 h2 =>
+    simp only [Prod.mk.injEq, Int.natCast_inj] at h
+    have := small h1
+    generalize (t' - u * u) / v = z at h
+    generalize t / u = z' at h this
+    omega
+  next h1 h2 =>
+    simp only [Prod.mk.injEq, Int.natCast_inj] at h
+    have := small h2
+    generalize (t - u * u) / v = z at h
+    generalize t' / u = z' at h this
+    omega
+  next h1 h2 =>
+    simp only [Prod.mk.injEq, Int.natCast_inj] at h
+    have e1 := Nat.div_add_mod (t - u * u) v
+    have e2 := Nat.div_add_mod (t' - u * u) v
+    have h3 : (t - u * u) / v = (t' - u * u) / v := by
+      have := h.1
+      generalize (t - u * u) / v = z1 at this
+      generalize (t' - u * u) / v = z2 at this
+      omega
+    rw [h3, h.2] at e1
+    omega
 
 theorem Fits.toTA (F : Fits c D) (hC : ConnP c.w D.piece) :
     TA c.ctx (trueQ c D) (trueSl c D) (trueTau c D) := by
@@ -153,7 +173,7 @@ theorem Fits.toTA (F : Fits c D) (hC : ConnP c.w D.piece) :
       c.mkTab k (D.motion k) = (trueQ c D).t2 ∨ c.mkTab k (D.motion k) = (trueQ c D).t3 := by
     apply slot_cases <;> simp [trueQ]
   have G := F.graph (trueQ c D) hqq
-  refine ⟨rfl, rfl, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+  refine ⟨rfl, rfl, ?_, ?_, ?_, ?_, ?_, ?_, ?_, F.w_pos, ?_, ?_⟩
   · intro i _; exact (D.piece _ _).isLt
   · intro i hi
     have hi' : i < c.w * c.w := hi
@@ -228,6 +248,25 @@ theorem Fits.toTA (F : Fits c D) (hC : ConnP c.w D.piece) :
     have := (key _ _ hp).2.2.2
     rw [he] at this
     exact this
+  · intro i j hi hj hs
+    have hi' : i < c.w * c.w := hi
+    have hj' : j < c.w * c.w := nbrs_lt hi hj
+    obtain ⟨hx, hy, _⟩ := code_split hi'
+    obtain ⟨hx', hy', _⟩ := code_split hj'
+    have hp : D.piece (j / c.w) (j % c.w) = D.piece (i / c.w) (i % c.w) := Fin.ext hs
+    have hadj := motion_adj (D.motion (D.piece (i / c.w) (i % c.w))) c.w hx hy hx' hy'
+      (nbrs_adj F.w_pos hj)
+    obtain ⟨a1, a2, a3, a4⟩ := F.maps hx hy
+    obtain ⟨b1, b2, b3, b4⟩ := F.maps hx' hy'
+    rw [hp] at b1 b2 b3 b4
+    show NoCross.Adj (tcOf c.u c.v _) (tcOf c.u c.v _)
+    simp only [trueTau, hp]
+    rw [tcOf_tcode (by rw [sideOf_eq]; omega) (by rw [sideOf_eq]; omega),
+      tcOf_tcode (by rw [sideOf_eq]; omega) (by rw [sideOf_eq]; omega)]
+    simp only [NoCross.Adj] at hadj ⊢
+    split <;> (simp only []; omega)
+  · intro t t' ht ht' h
+    exact tcOf_inj F.hv ht ht' h
 
 theorem Fits.not_deadR (F : Fits c D) (hC : ConnP c.w D.piece) :
     deadR c (trueQ c D) (List.range c.nS) (List.range c.nT) = false := by
@@ -236,63 +275,31 @@ theorem Fits.not_deadR (F : Fits c D) (hC : ConnP c.w D.piece) :
     apply slot_cases <;> simp [trueQ]
   have T := F.toTA hC
   simp only [deadR, testRook, F.not_dead _ hqq, Bool.false_or]
-  exact T.rookDead _ _ _ T.alive0
+  exact T.rookTest _ _ _ _ T.alive0
 
 theorem Fits.check22R_false (F : Fits c D) (hC : ConnP c.w D.piece) {a b e d : Fin 4}
     {ord : Tab → Tab → Tab → Tab → Q}
     (hord : ord (c.mkTab a (D.motion a)) (c.mkTab b (D.motion b)) (c.mkTab e (D.motion e))
       (c.mkTab d (D.motion d)) = trueQ c D)
+    (hall : ∀ k : Fin 4, k = a ∨ k = b ∨ k = e ∨ k = d)
+    (hd : a ≠ e ∧ a ≠ d ∧ b ≠ e ∧ b ≠ d)
     (h1 : a ≠ b) (h2 : e ≠ d) (s1 : c.side a = c.side b) (s2 : c.side e = c.side d)
     (g1 : ∀ j, c.side j = c.side a → j = a ∨ j = b) (g2 : ∀ j, c.side j = c.side e → j = e ∨ j = d)
-    (h : check22R c a b e d ord = true) : False := by
-  have hs : ∀ (f : Unit → List (Pack × Pack)), (Task.spawn f).get = f () := fun _ => rfl
-  simp only [check22R, persist_eq, hs, parAll_eq, List.all_eq_true] at h
-  have := h _ (F.pair_mem h1 s1 g1) _ (F.pair_mem h2 s2 g2)
-  simp only [hord] at this
-  rw [F.not_deadR hC] at this
-  simp at this
+    (h : check22R c a b e d ord = true) : False :=
+  F.check22G_false hall hd h1 h2 s1 s2 g1 g2 (by rw [hord]; exact F.not_deadR hC) h
 
 theorem Fits.check13R_false (F : Fits c D) (hC : ConnP c.w D.piece)
     (s1 : c.side 1 = c.side 2) (s2 : c.side 1 = c.side 3)
     (g : ∀ j, c.side j = c.side 1 → j = 1 ∨ j = 2 ∨ j = 3) (hf : c.fixed 0 = true)
+    (h01 : c.side 0 ≠ c.side 1)
     (h : check13R c = true) : False := by
-  simp only [check13R, persist_eq, parAll_eq, parMap_eq, List.all_eq_true] at h
-  have hd := F.not_deadR hC
   have h0 := F.hfix 0 hf
+  refine F.check13G_false s1 s2 g hf h01 ?_ h
+  have hd := F.not_deadR hC
   have hQ : trueQ c D = ⟨c.mkTab 0 idMotion, c.mkTab 1 (D.motion 1), c.mkTab 2 (D.motion 2),
       c.mkTab 3 (D.motion 3)⟩ := by simp [trueQ, h0]
   rw [hQ] at hd
-  let P1 : Pack := ⟨D.motion 1, c.mkTab 1 (D.motion 1)⟩
-  let P2 : Pack := ⟨D.motion 2, c.mkTab 2 (D.motion 2)⟩
-  let P3 : Pack := ⟨D.motion 3, c.mkTab 3 (D.motion 3)⟩
-  have h31 : P3 ∈ (c.packs c.mkPv 3).filter fun p3 => ptd (c.mkPT c.mkPv) 3 1 p3.t P1.t :=
-    List.mem_filter.2 ⟨F.pack_mem 3, F.ptd_true (by decide) (by rw [s2])⟩
-  have h32 : P3 ∈ (c.packs c.mkPv 3).filter fun p3 => ptd (c.mkPT c.mkPv) 3 2 p3.t P2.t :=
-    List.mem_filter.2 ⟨F.pack_mem 3, F.ptd_true (by decide) (by rw [← s2, s1])⟩
-  have hc : cornersOk (c.tcorners 1) [P1.t, P2.t, P3.t] = true := F.corners_true 1 (by
-    intro j hj
-    rcases g j hj with rfl | rfl | rfl <;> simp [P1, P2, P3])
-  have hp12 : ptd (c.mkPT c.mkPv) 1 2 P1.t P2.t = true := F.ptd_true (by decide) s1
-  have hE : (P2, (c.packs c.mkPv 3).filter fun p3 => ptd (c.mkPT c.mkPv) 3 2 p3.t P2.t) ∈
-      (c.packs c.mkPv 2).map fun p2 => (p2, (c.packs c.mkPv 3).filter
-        fun p3 => ptd (c.mkPT c.mkPv) 3 2 p3.t p2.t) :=
-    List.mem_map.2 ⟨P2, F.pack_mem 2, rfl⟩
-  have hE2 : (P2, (c.packs c.mkPv 3).filter fun p3 => ptd (c.mkPT c.mkPv) 3 2 p3.t P2.t) ∈
-      (chunksF 256 ((c.packs c.mkPv 2).map fun p2 => (p2, (c.packs c.mkPv 3).filter
-        fun p3 => ptd (c.mkPT c.mkPv) 3 2 p3.t p2.t)).length
-        ((c.packs c.mkPv 2).map fun p2 => (p2, (c.packs c.mkPv 3).filter
-        fun p3 => ptd (c.mkPT c.mkPv) 3 2 p3.t p2.t))).flatten := by
-    rw [flatten_chunksF]; exact hE
-  obtain ⟨ch, hch, he⟩ := List.mem_flatten.1 hE2
-  have := h ((P1, maskOf (32 * c.w * c.w + 8) c.w ((c.packs c.mkPv 3).filter
-      fun p3 => ptd (c.mkPT c.mkPv) 3 1 p3.t P1.t)), ch)
-    (List.mem_flatMap.2 ⟨_, List.mem_map.2 ⟨P1, F.pack_mem 1, rfl⟩, List.mem_map.2 ⟨ch, hch, rfl⟩⟩) _ he
-  simp only [hp12, Bool.not_true, Bool.false_or, List.all_eq_true] at this
-  have := this P3 h32
-  rw [get_maskOf (by omega) h31, hc] at this
-  simp only [Bool.not_true, Bool.false_or] at this
-  rw [hd] at this
-  simp at this
+  exact hd
 
 /-! ### Connectivity survives the normal form -/
 
@@ -409,7 +416,7 @@ theorem no_rook_of_check {u v w : Nat} (hu : 0 < u) (hv : 0 < v) (huw : u < w) (
     have m0 := o2 0 o
     refine Fits.check22R_false (c := cfgAdj u v w) (D := E2) ⟨?_, hc, ?_, ?_, hu, hv, huw, hvw⟩
       (by show ConnP w E2.piece; rw [p2, p1]; exact cE)
-      (a := 0) (b := 1) (e := 2) (d := 3) (ord := ordAdj) rfl (by decide) (by decide) rfl rfl
+      (a := 0) (b := 1) (e := 2) (d := 3) (ord := ordAdj) rfl (by apply slot_cases <;> simp) (by decide) (by decide) (by decide) rfl rfl
       (by apply slot_cases <;> simp [cfgAdj]) (by apply slot_cases <;> simp [cfgAdj]) ha
     · rw [t2, t1]; apply slot_cases <;> simp [cfgAdj, e0, e1, e2, e3]
     · apply slot_cases <;> intro hk <;> simp_all [cfgAdj]
@@ -422,7 +429,7 @@ theorem no_rook_of_check {u v w : Nat} (hu : 0 < u) (hv : 0 < v) (huw : u < w) (
     have m0 := o2 0 o
     refine Fits.check22R_false (c := cfgDiag u v w) (D := E2) ⟨?_, hc, ?_, ?_, hu, hv, huw, hvw⟩
       (by show ConnP w E2.piece; rw [p2, p1]; exact cE)
-      (a := 0) (b := 2) (e := 1) (d := 3) (ord := ordDiag) rfl (by decide) (by decide) rfl rfl
+      (a := 0) (b := 2) (e := 1) (d := 3) (ord := ordDiag) rfl (by apply slot_cases <;> simp) (by decide) (by decide) (by decide) rfl rfl
       (by apply slot_cases <;> simp [cfgDiag]) (by apply slot_cases <;> simp [cfgDiag]) hd
     · rw [t2, t1]; apply slot_cases <;> simp [cfgDiag, e0, e1, e2, e3]
     · apply slot_cases <;> intro hk <;> simp_all [cfgDiag]
@@ -443,7 +450,7 @@ theorem no_rook_of_check {u v w : Nat} (hu : 0 < u) (hv : 0 < v) (huw : u < w) (
       · rw [m0]; exact c1
     refine Fits.check13R_false (c := cfgV u v w) (D := E2) ⟨?_, hc, ?_, ?_, hu, hv, huw, hvw⟩
       (by show ConnP w E2.piece; rw [p2, p1]; exact cE)
-      rfl rfl (by apply slot_cases <;> simp [cfgV]) rfl hV
+      rfl rfl (by apply slot_cases <;> simp [cfgV]) rfl (by simp [cfgV]) hV
     · rw [t2, t1]; apply slot_cases <;> simp [cfgV, e0, e1, e2, e3]
     · apply slot_cases <;> intro hk <;> simp_all [cfgV]
     · apply slot_cases <;> intro hk <;> simp_all [cfgV]
@@ -463,7 +470,7 @@ theorem no_rook_of_check {u v w : Nat} (hu : 0 < u) (hv : 0 < v) (huw : u < w) (
       · rw [m0]; exact c1
     refine Fits.check13R_false (c := cfgU u v w) (D := E2) ⟨?_, hc, ?_, ?_, hu, hv, huw, hvw⟩
       (by show ConnP w E2.piece; rw [p2, p1]; exact cE)
-      rfl rfl (by apply slot_cases <;> simp [cfgU]) rfl hU
+      rfl rfl (by apply slot_cases <;> simp [cfgU]) rfl (by simp [cfgU]) hU
     · rw [t2, t1]; apply slot_cases <;> simp [cfgU, e0, e1, e2, e3]
     · apply slot_cases <;> intro hk <;> simp_all [cfgU]
     · apply slot_cases <;> intro hk <;> simp_all [cfgU]

@@ -186,7 +186,7 @@ theorem no_dissection_of_check {u v w : Nat} (hu : 0 < u) (hv : 0 < v) (huw : u 
     have o : E1.toU 0 ≠ E1.toU 2 := by rw [t1, e0, e2]; simp
     have m0 := o2 0 o
     refine Fits.check22_false (c := cfgAdj u v w) (D := E2) ⟨?_, hc, ?_, ?_, hu, hv, huw, hvw⟩
-      (a := 0) (b := 1) (e := 2) (d := 3) (by decide) (by decide) (by decide) rfl rfl (by apply slot_cases <;> simp [cfgAdj]) (by apply slot_cases <;> simp [cfgAdj]) ha
+      (a := 0) (b := 1) (e := 2) (d := 3) (by decide) (by decide) (by decide) (by decide) rfl rfl (by apply slot_cases <;> simp [cfgAdj]) (by apply slot_cases <;> simp [cfgAdj]) ha
     · rw [t2, t1]; apply slot_cases <;> simp [cfgAdj, e0, e1, e2, e3]
     · apply slot_cases <;> intro hk <;> simp_all [cfgAdj]
     · intro k hk; simp [cfgAdj] at hk
@@ -197,7 +197,7 @@ theorem no_dissection_of_check {u v w : Nat} (hu : 0 < u) (hv : 0 < v) (huw : u 
     have o : E1.toU 0 ≠ E1.toU 1 := by rw [t1, e0, e1]; simp
     have m0 := o2 0 o
     refine Fits.check22_false (c := cfgDiag u v w) (D := E2) ⟨?_, hc, ?_, ?_, hu, hv, huw, hvw⟩
-      (a := 0) (b := 2) (e := 1) (d := 3) (by decide) (by decide) (by decide) rfl rfl (by apply slot_cases <;> simp [cfgDiag]) (by apply slot_cases <;> simp [cfgDiag]) hd
+      (a := 0) (b := 2) (e := 1) (d := 3) (by decide) (by decide) (by decide) (by decide) rfl rfl (by apply slot_cases <;> simp [cfgDiag]) (by apply slot_cases <;> simp [cfgDiag]) hd
     · rw [t2, t1]; apply slot_cases <;> simp [cfgDiag, e0, e1, e2, e3]
     · apply slot_cases <;> intro hk <;> simp_all [cfgDiag]
     · intro k hk; simp [cfgDiag] at hk
@@ -216,7 +216,7 @@ theorem no_dissection_of_check {u v w : Nat} (hu : 0 < u) (hv : 0 < v) (huw : u 
       · rw [m0]; exact b1
       · rw [m0]; exact c1
     refine Fits.check13_false (c := cfgV u v w) (D := E2) ⟨?_, hc, ?_, ?_, hu, hv, huw, hvw⟩
-      rfl rfl (by apply slot_cases <;> simp [cfgV]) rfl hV
+      rfl rfl (by apply slot_cases <;> simp [cfgV]) rfl (by simp [cfgV]) hV
     · rw [t2, t1]; apply slot_cases <;> simp [cfgV, e0, e1, e2, e3]
     · apply slot_cases <;> intro hk <;> simp_all [cfgV]
     · apply slot_cases <;> intro hk <;> simp_all [cfgV]
@@ -235,7 +235,7 @@ theorem no_dissection_of_check {u v w : Nat} (hu : 0 < u) (hv : 0 < v) (huw : u 
       · rw [m0]; exact b1
       · rw [m0]; exact c1
     refine Fits.check13_false (c := cfgU u v w) (D := E2) ⟨?_, hc, ?_, ?_, hu, hv, huw, hvw⟩
-      rfl rfl (by apply slot_cases <;> simp [cfgU]) rfl hU
+      rfl rfl (by apply slot_cases <;> simp [cfgU]) rfl (by simp [cfgU]) hU
     · rw [t2, t1]; apply slot_cases <;> simp [cfgU, e0, e1, e2, e3]
     · apply slot_cases <;> intro hk <;> simp_all [cfgU]
     · apply slot_cases <;> intro hk <;> simp_all [cfgU]

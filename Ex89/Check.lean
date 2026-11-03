@@ -56,10 +56,16 @@ def Cfg.priv (c : Cfg) (k : Fin 4) : List (Nat × Nat) :=
 /-- The private cells of all four slots. They are computed once, by `Cfg.mkPv`. -/
 abbrev Pv := Fin 4 → List (Nat × Nat)
 
-def Cfg.mkPv (c : Cfg) : Pv :=
-  let a0 := c.priv 0; let a1 := c.priv 1; let a2 := c.priv 2; let a3 := c.priv 3
+/-- The four lists. They are kept apart from `pvOf`, because the compiler would turn a definition of
+`Pv` with `let`s into a function that computes the lists again at each call. -/
+def Cfg.pv4 (c : Cfg) : List (Nat × Nat) × List (Nat × Nat) × List (Nat × Nat) × List (Nat × Nat) :=
+  (c.priv 0, c.priv 1, c.priv 2, c.priv 3)
+
+def pvOf (a : List (Nat × Nat) × List (Nat × Nat) × List (Nat × Nat) × List (Nat × Nat)) : Pv :=
   fun k => match k with
-    | 0 => a0 | 1 => a1 | 2 => a2 | 3 => a3
+    | 0 => a.1 | 1 => a.2.1 | 2 => a.2.2.1 | 3 => a.2.2.2
+
+def Cfg.mkPv (c : Cfg) : Pv := pvOf c.pv4
 
 def inSq (S : Nat) (a b : Int) : Bool :=
   decide (0 ≤ a) && decide (a < S) && decide (0 ≤ b) && decide (b < S)
@@ -308,17 +314,6 @@ theorem Cfg.pairs_eq (cf : Cfg) (pv : Pv) (pt : PT) (a b : Fin 4) :
 def Cfg.nS (cf : Cfg) : Nat := cf.w * cf.w
 def Cfg.nT (cf : Cfg) : Nat := cf.u * cf.u + cf.v * cf.v
 
-def check22 (cf : Cfg) (a b c d : Fin 4) : Bool :=
-  let cf := persist cf
-  let rS := persist (List.range cf.nS); let rT := persist (List.range cf.nT)
-  let pv := persist cf.mkPv
-  let pt := persist (cf.mkPT pv)
-  let tP2 := Task.spawn fun _ => cf.pairs pv pt c d
-  let P1 := persist (cf.pairs pv pt a b)
-  let P2 := persist tP2.get
-  parAll P1 fun pq => P2.all fun rs =>
-    dead ⟨pq.1.t, pq.2.t, rs.1.t, rs.2.t⟩ rS rT cf.nS (St.init cf.nS cf.nT)
-
 /-- A number for a motion, used to mark motions in a table. Two motions with the same number would
 only make the search test more cases, so the correctness of the search does not depend on it. -/
 def motionId (w : Nat) (m : Motion) : Nat :=
@@ -329,31 +324,328 @@ def motionId (w : Nat) (m : Motion) : Nat :=
 def maskOf (n w : Nat) (l : List Pack) : Array Bool :=
   l.foldl (fun a p => set a (motionId w p.m % n)) (Array.replicate n false)
 
-/-- Slot 0 is one whole square, and slots 1, 2, 3 go to the other square. -/
-def check13 (cf : Cfg) : Bool :=
+/-! ### The cover test
+
+Every source cell has an image and every target cell has a preimage, under one of the four motions.
+A number `e < n` stands for source cell `e`, and a number `n ≤ e` for target cell `e - n`. -/
+
+/-- The motion with table `t` reaches `e`. -/
+def hitE (n : Nat) (t : Tab) (e : Nat) : Bool :=
+  if e < n then t.img.getD e 0 != 0 else t.pre.getD (e - n) 0 != 0
+
+/-- Slot 0 fills its square with the identity, so the cells of that square belong to slot 0. Another
+motion can only use the other cells: it reaches a target cell only through one of them. -/
+def hitL (n : Nat) (t0 t : Tab) (e : Nat) : Bool :=
+  if e < n then t.img.getD e 0 != 0
+  else
+    let p := t.pre.getD (e - n) 0
+    p != 0 && t0.img.getD (p - 1) 0 == 0
+
+/-- No motion among these three reaches `e`. -/
+def uncov (n N : Nat) (t0 t1 t3 : Tab) (e : Nat) : Bool :=
+  decide (e < N) && !hitE n t0 e && !hitL n t0 t1 e && !hitL n t0 t3 e
+
+/-- No motion among these four reaches `e`. -/
+def missQ (n N : Nat) (t0 t1 t2 t3 : Tab) (e : Nat) : Bool :=
+  uncov n N t0 t1 t3 e && !hitL n t0 t2 e
+
+/-- The first number that the three placements do not reach, found in the words from the top. Only
+used to choose a number, which is then checked by `missQ`. -/
+def firstMiss (fw a b c : Array Nat) : Nat → Option Nat
+  | 0 => none
+  | i + 1 =>
+    let f := fw.getD i 0
+    let w := f ^^^ (f &&& (a.getD i 0 ||| b.getD i 0 ||| c.getD i 0))
+    if w == 0 then firstMiss fw a b c i else some (i * 60 + w.log2)
+
+/-- A number that no motion reaches, if `firstMiss` finds one. -/
+def witQ (n N : Nat) (t0 t1 t2 t3 : Tab) (e : Option Nat) : Bool :=
+  match e with
+  | none => false
+  | some e => missQ n N t0 t1 t2 t3 e
+
+/-- The numbers below `N` that satisfy `f`, in words of 60 bits. -/
+def wordsOf (N : Nat) (f : Nat → Bool) : Array Nat :=
+  Array.ofFn (n := N / 60 + 1) fun h => (List.range 60).foldl (fun c i =>
+    if decide (h.val * 60 + i < N) && f (h.val * 60 + i) then c ||| (1 <<< i) else c) 0
+
+/-- A placement with the numbers that it reaches, as words. These are only used to choose numbers,
+which are then checked. -/
+structure PB where
+  p : Pack
+  w : Array Nat
+
+def mkPB (N : Nat) (p : Pack) (f : Nat → Bool) : PB := ⟨p, wordsOf N f⟩
+
+/-! ### Pair forcing
+
+Two motions must fill one square by themselves. This forces many cells to belong to the pair. The
+result for a pair is `F`, cells that must belong to it, and `AL`, cells that can belong to it. For the
+two pairs of a dissection, `F` and `F'` are disjoint, and `AL` and `AL'` together are everything. -/
+
+/-- The number of the edge from cell `p` to motion `s` of the pair. -/
+@[inline] def eIdx (p : Nat) (s : Bool) : Nat := p * 2 + (if s then 1 else 0)
+
+@[inline] def tabS (t0 t1 : Tab) (s : Bool) : Tab := if s then t1 else t0
+
+def clr (a : Array Bool) (i : Nat) : Array Bool := a.setIfInBounds i false
+
+structure PFS where
+  alive : Array Bool
+  forced : Array Bool
+
+/-- Cell `p` certainly belongs to motion `s`: it does not belong to the other one. -/
+def pfForce (st : PFS) (p : Nat) (s : Bool) : PFS :=
+  { alive := clr st.alive (eIdx p (!s)), forced := set st.forced p }
+
+/-- A target cell has to be filled by one of its two possible cells. -/
+def pfT (t0 t1 : Tab) (st : PFS) (o : Nat) : Option PFS :=
+  let p0 := t0.pre.getD o 0
+  let p1 := t1.pre.getD o 0
+  let c0 := p0 != 0 && get st.alive (eIdx (p0 - 1) false)
+  let c1 := p1 != 0 && get st.alive (eIdx (p1 - 1) true)
+  if c0 then (if c1 then some st else some (pfForce st (p0 - 1) false))
+  else (if c1 then some (pfForce st (p1 - 1) true) else none)
+
+/-- Cell `p` belongs to motion `s`, so nothing else goes to its image. -/
+def pfOther (t0 t1 : Tab) (st : PFS) (p : Nat) (s : Bool) : PFS :=
+  let t := (tabS t0 t1 s).img.getD p 0
+  let p' := (tabS t0 t1 (!s)).pre.getD (t - 1) 0
+  if t != 0 && p' != 0 && p' - 1 != p && (tabS t0 t1 (!s)).img.getD (p' - 1) 0 == t then
+    { st with alive := clr st.alive (eIdx (p' - 1) (!s)) }
+  else st
+
+/-- A forced cell needs one of its two motions. -/
+def pfS (t0 t1 : Tab) (st : PFS) (p : Nat) : Option PFS :=
+  if !get st.forced p then some st else
+  let c0 := get st.alive (eIdx p false)
+  let c1 := get st.alive (eIdx p true)
+  if c0 then (if c1 then some st else some (pfOther t0 t1 st p false))
+  else (if c1 then some (pfOther t0 t1 st p true) else none)
+
+def pfPassT (t0 t1 : Tab) : List Nat → PFS → Option PFS
+  | [], st => some st
+  | o :: l, st =>
+    match pfT t0 t1 st o with
+    | none => none
+    | some st' => pfPassT t0 t1 l st'
+
+def pfPassS (t0 t1 : Tab) : List Nat → PFS → Option PFS
+  | [], st => some st
+  | p :: l, st =>
+    match pfS t0 t1 st p with
+    | none => none
+    | some st' => pfPassS t0 t1 l st'
+
+def pfCount (st : PFS) : Nat :=
+  st.alive.foldl (fun c b => if b then c else c + 1) 0 + st.forced.foldl (fun c b => if b then c + 1 else c) 0
+
+def pfLoop (t0 t1 : Tab) (os rS : List Nat) : Nat → PFS → Option PFS
+  | 0, st => some st
+  | n + 1, st =>
+    match pfPassT t0 t1 os st with
+    | none => none
+    | some s1 =>
+      match pfPassS t0 t1 rS s1 with
+      | none => none
+      | some s2 => if pfCount s2 == pfCount st then some s2 else pfLoop t0 t1 os rS n s2
+
+/-- The numbers `p` below `2 ^ d` such that `lo + p` satisfies `f`, as the bits of a number. Halving
+keeps most of the work on small numbers. -/
+def bitsD (f : Nat → Bool) : Nat → Nat → Nat
+  | 0, lo => if f lo then 1 else 0
+  | d + 1, lo => bitsD f d lo ||| (bitsD f d (lo + 2 ^ d) <<< 2 ^ d)
+
+/-- The set of the numbers below `n` that satisfy `f`, as the bits of a number. -/
+def bitsUpTo (f : Nat → Bool) (n : Nat) : Nat :=
+  bitsD (fun p => decide (p < n) && f p) (n.log2 + 1) 0
+
+/-- A pair with its two sets. -/
+structure PFR where
+  pq : Pack × Pack
+  F : Nat
+  AL : Nat
+
+/-- Cell `p` is private to a slot other than `k`. -/
+def otherP (pt : PT) (k : Fin 4) (p : Nat) : Bool :=
+  allSlots.any fun j => j != k && (pt.isP j).getD p false
+
+/-- The table of `otherP`, computed once for all pairs. -/
+def otherTab (n : Nat) (pt : PT) (k : Fin 4) : Array Bool :=
+  Array.ofFn (n := n) fun p => otherP pt k p.val
+
+def pfAlive0 (n : Nat) (oa ob : Array Bool) (t0 t1 : Tab) : Array Bool :=
+  Array.ofFn (n := 2 * n) fun e =>
+    (tabS t0 t1 (e.val % 2 == 1)).img.getD (e.val / 2) 0 != 0 &&
+      !(if e.val % 2 == 1 then ob else oa).getD (e.val / 2) false
+
+def pfForced0 (n : Nat) (pt : PT) (ka kb : Fin 4) : Array Bool :=
+  Array.ofFn (n := n) fun p => (pt.isP ka).getD p.val false || (pt.isP kb).getD p.val false
+
+/-- The test for one pair. `none` means that this pair is impossible. -/
+def pairForce (n : Nat) (pt : PT) (ka kb : Fin 4) (oa ob : Array Bool) (os rS : List Nat)
+    (pq : Pack × Pack) : Option PFR :=
+  let t0 := pq.1.t
+  let t1 := pq.2.t
+  match pfLoop t0 t1 os rS (4 * n) ⟨pfAlive0 n oa ob t0 t1, pfForced0 n pt ka kb⟩ with
+  | none => none
+  | some st => some
+    { pq,
+      F := bitsUpTo (get st.forced) n,
+      AL := bitsUpTo (fun p => get st.alive (eIdx p false) || get st.alive (eIdx p true)) n }
+
+/-- `a`, `b` go to one square and `c`, `d` go to the other one. The function `ord` gives the order of
+the tables, and `test` is the test for one quadruple of placements. -/
+def check22G (cf : Cfg) (a b c d : Fin 4) (ord : Tab → Tab → Tab → Tab → Q)
+    (test : Cfg → Q → List Nat → List Nat → Bool) : Bool :=
   let cf := persist cf
+  let n := cf.nS
   let rS := persist (List.range cf.nS); let rT := persist (List.range cf.nT)
-  let pv := persist cf.mkPv
+  let pv := pvOf (persist cf.pv4)
+  let pt := persist (cf.mkPT pv)
+  let os1 := persist (rT.filter fun j => decide (j < cf.u * cf.u) == cf.side a)
+  let os2 := persist (rT.filter fun j => decide (j < cf.u * cf.u) == cf.side c)
+  let full := persist (bitsUpTo (fun _ => true) n)
+  let oa := persist (otherTab n pt a); let ob := persist (otherTab n pt b)
+  let oc := persist (otherTab n pt c); let od := persist (otherTab n pt d)
+  let tP2 := Task.spawn fun _ => (parMap (cf.pairs pv pt c d) (pairForce n pt c d oc od os2 rS)).filterMap id
+  let P1 := persist ((parMap (cf.pairs pv pt a b) (pairForce n pt a b oa ob os1 rS)).filterMap id)
+  let P2 := persist tP2.get
+  parAll P1 fun x => P2.all fun y =>
+    (x.F &&& y.F) != 0 || (x.AL ||| y.AL) != full ||
+    test cf (ord x.pq.1.t x.pq.2.t y.pq.1.t y.pq.2.t) rS rT
+
+def deadP (cf : Cfg) (q : Q) (rS rT : List Nat) : Bool :=
+  dead q rS rT cf.nS (St.init cf.nS cf.nT)
+
+def check22 (cf : Cfg) (a b c d : Fin 4) : Bool :=
+  check22G cf a b c d (fun x y z t => ⟨x, y, z, t⟩) deadP
+
+/-- The indices of the elements of `A` that satisfy `f`, as the bits of a number. -/
+def colBits (A : Array PB) (f : PB → Bool) : Nat :=
+  bitsUpTo (fun j => match A[j]? with | some p => f p | none => false) A.size
+
+/-- A number that no motion of the first two reaches cuts down the third placements. Each number is
+checked, so nothing is assumed about the choice of the numbers. -/
+def narrowOne (n N : Nat) (t0 t1 t3 : Tab) (cols : Array Nat) (al e : Nat) : Nat :=
+  if uncov n N t0 t1 t3 e then al &&& cols.getD e 0 else al
+
+/-- All numbers of one word. -/
+def narrowWord (n N : Nat) (t0 t1 t3 : Tab) (cols : Array Nat) : Nat → Nat → Nat → Nat → Nat
+  | 0, _, _, al => al
+  | k + 1, b, w, al =>
+    if al == 0 || w == 0 then al
+    else
+      let h := w.log2
+      narrowWord n N t0 t1 t3 cols k b (w ^^^ (1 <<< h)) (narrowOne n N t0 t1 t3 cols al (b + h))
+
+/-- All words, from the top: the target cells have the highest numbers, and they kill the most. -/
+def narrowW (n N : Nat) (t0 t1 t3 : Tab) (cols fw a c : Array Nat) : Nat → Nat → Nat
+  | 0, al => al
+  | i + 1, al =>
+    if al == 0 then al
+    else
+      let f := fw.getD i 0
+      let w := f ^^^ (f &&& (a.getD i 0 ||| c.getD i 0))
+      narrowW n N t0 t1 t3 cols fw a c i (narrowWord n N t0 t1 t3 cols 3 (i * 60) w al)
+
+/-! ### Collisions
+
+Two cells `c1` and `c3` are possible only for the motions of slots 1 and 3, in this order, and they
+have the same image. Then slot 2 must reach one of them. In the same way, two target cells that only
+slots 1 and 3 can reach, in this order, from the same cell: slot 2 must reach one of them. -/
+
+/-- The source form of a collision. -/
+def collS (n : Nat) (t0 t1 t3 : Tab) (c1 c3 : Nat) : Bool :=
+  decide (c1 < n) && decide (c3 < n) && c1 != c3 && t0.img.getD c1 0 == 0 && t0.img.getD c3 0 == 0 &&
+  t1.img.getD c1 0 != 0 && t3.img.getD c1 0 == 0 && t3.img.getD c3 0 != 0 && t1.img.getD c3 0 == 0 &&
+  t1.img.getD c1 0 == t3.img.getD c3 0
+
+/-- The target form of a collision. -/
+def collT (n N : Nat) (t0 t1 t3 : Tab) (e1 e3 : Nat) : Bool :=
+  decide (n ≤ e1) && decide (n ≤ e3) && decide (e1 < N) && decide (e3 < N) &&
+  !hitE n t0 e1 && !hitE n t0 e3 && !hitL n t0 t3 e1 && !hitL n t0 t1 e3 &&
+  t1.pre.getD (e1 - n) 0 != 0 && t1.pre.getD (e1 - n) 0 == t3.pre.getD (e3 - n) 0
+
+def collOK (n N : Nat) (t0 t1 t3 : Tab) (e : Nat × Nat) : Bool :=
+  collS n t0 t1 t3 e.1 e.2 || collT n N t0 t1 t3 e.1 e.2
+
+/-- Cut down the third placements by one collision. -/
+def applyColl (n N : Nat) (t0 t1 t3 : Tab) (cols : Array Nat) (al : Nat) (e : Nat × Nat) : Nat :=
+  if al != 0 && collOK n N t0 t1 t3 e then al &&& (cols.getD e.1 0 ||| cols.getD e.2 0) else al
+
+/-- All collisions of two motions. Nothing is assumed about this list. -/
+def collList (n m : Nat) (t0 t1 t3 : Tab) : List (Nat × Nat) := Id.run do
+  let mut mk := Array.replicate (m + 1) 0
+  let mut out : List (Nat × Nat) := []
+  for c in [0:n] do
+    if t0.img.getD c 0 != 0 then continue
+    let a := t1.img.getD c 0
+    let b := t3.img.getD c 0
+    if a != 0 && b == 0 then mk := mk.setIfInBounds a (c + 1)
+    if a != 0 && b != 0 && a != b then out := (n + a - 1, n + b - 1) :: out
+  for c in [0:n] do
+    if t0.img.getD c 0 != 0 then continue
+    let a := t1.img.getD c 0
+    let b := t3.img.getD c 0
+    if a == 0 && b != 0 then
+      let d := mk.getD b 0
+      if d != 0 && d - 1 != c then out := (d - 1, c) :: out
+  return out
+
+/-- `f` holds on all bits of `r`. Out of fuel, the answer is `false`. -/
+def allBits (f : Nat → Bool) : Nat → Nat → Bool
+  | 0, r => r == 0
+  | k + 1, r =>
+    if r == 0 then true
+    else
+      let e := r.log2
+      f e && allBits f k (r ^^^ (1 <<< e))
+
+/-- Slot 0 is one whole square, and slots 1, 2, 3 go to the other square. The possible placements of
+slot 2 are kept as the bits of a number. They must fit with the placements of slots 1 and 3, and must
+reach each number that those two do not reach. -/
+def check13G (cf : Cfg) (test : Cfg → Q → List Nat → List Nat → Bool) : Bool :=
+  let cf := persist cf
+  let n := cf.nS
+  let N := cf.nS + cf.nT
+  let rS := persist (List.range cf.nS); let rT := persist (List.range cf.nT)
+  let pv := pvOf (persist cf.pv4)
   let t0 := persist (cf.mkTab 0 idMotion)
-  let L2 := persist (cf.packs pv 2); let L3 := persist (cf.packs pv 3)
-  let n := 32 * cf.w * cf.w + 8
+  let bit : Pack → PB := fun p => mkPB N p (hitL n t0 p.t)
+  let A := persist (parMap (cf.packs pv 2) bit).toArray
+  let L3P := persist (cf.packs pv 3)
+  let sz := 32 * cf.w * cf.w + 8
   let pt := persist (cf.mkPT pv)
   let cs := persist (cf.tcorners 1)
-  let P23 := persist (parMap L2 fun p2 => (p2, L3.filter fun p3 => ptd pt 3 2 p3.t p2.t))
+  let cols := persist (parMap (List.range N) fun e => colBits A fun p => hitL n t0 p.p.t e).toArray
+  let fw := persist (wordsOf N fun e => !hitE n t0 e)
+  let L3 := persist (parMap L3P fun p3 => (bit p3, colBits A fun p => ptd pt 3 2 p3.t p.p.t))
   let P1M := persist (parMap (cf.packs pv 1) fun p1 =>
-    (p1, maskOf n cf.w (L3.filter fun p3 => ptd pt 3 1 p3.t p1.t)))
-  let CH := persist (chunksF 256 P23.length P23)
-  -- One task for each first piece and each short part of the second pieces: the amount of work
+    (bit p1, colBits A (fun p => ptd pt 1 2 p1.t p.p.t),
+      maskOf sz cf.w (L3P.filter fun p3 => ptd pt 3 1 p3.t p1.t)))
+  let CH := persist (chunksF 256 L3.length L3)
+  -- One task for each first piece and each short part of the third pieces: the amount of work
   -- depends very much on the first piece, so one task for each first piece would be unbalanced.
   parAll (P1M.flatMap fun pm => CH.map fun ch => (pm, ch)) fun x =>
-    let p1 := x.1.1
-    let mask := x.1.2
-    x.2.all fun e =>
-      !ptd pt 1 2 p1.t e.1.t ||
-      e.2.all fun p3 =>
-        !get mask (motionId cf.w p3.m % n) ||
-        !cornersOk cs [p1.t, e.1.t, p3.t] ||
-        dead ⟨t0, p1.t, e.1.t, p3.t⟩ rS rT cf.nS (St.init cf.nS cf.nT)
+    let b1 := x.1.1
+    let c1 := x.1.2.1
+    let mask := x.1.2.2
+    x.2.all fun y =>
+      let b3 := y.1
+      !get mask (motionId cf.w b3.p.m % sz) ||
+      allBits (fun j => match A[j]? with
+        | none => true
+        | some b2 =>
+          witQ n N t0 b1.p.t b2.p.t b3.p.t (firstMiss fw b1.w b2.w b3.w (N / 60 + 1)) ||
+          !cornersOk cs [b1.p.t, b2.p.t, b3.p.t] ||
+          test cf ⟨t0, b1.p.t, b2.p.t, b3.p.t⟩ rS rT)
+        (A.size + 1)
+        (let al := narrowW n N t0 b1.p.t b3.p.t cols fw b1.w b3.w (N / 60 + 1) (c1 &&& y.2)
+         if al == 0 then 0 else
+         (collList n cf.nT t0 b1.p.t b3.p.t).foldl (applyColl n N t0 b1.p.t b3.p.t cols) al)
+
+def check13 (cf : Cfg) : Bool := check13G cf deadP
 
 def cfgDiag (u v w : Nat) : Cfg :=
   { u, v, w, side := fun k => k == 1 || k == 3, ids := fun k => k == 0 || k == 1, fixed := fun _ => false }
