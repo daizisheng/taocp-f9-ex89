@@ -13,6 +13,11 @@ There are 50 triples with `w < 100`. The other 41 are in one of two families or 
 one: `w = v + 1`, and `(2k, k^2 - 1, k^2 + 1)` with `k` even. Those triples do have dissections.
 That part is not formalized here.
 
+**For all triples, a partial theorem is proved:** if `(u, v, w)` is not a multiple of `(3, 4, 5)`,
+then in every four-piece dissection, connected or not, exactly one piece goes to the `u × u` square.
+See [A partial theorem for all triples](#a-partial-theorem-for-all-triples). The remaining case,
+one piece to the `u × u` square and three to the `v × v` square, is open here.
+
 ## What is proved
 
 The theorems are at the end of [`Ex89/Main.lean`](Ex89/Main.lean),
@@ -206,6 +211,40 @@ goes to one square. -/
 def NoDissection (u v w : Nat) : Prop := Dissection u v w → False
 ```
 
+## A partial theorem for all triples
+
+[`Ex89/Partial.lean`](Ex89/Partial.lean) proves this for every Pythagorean triple that is not a
+multiple of `(3, 4, 5)`:
+
+```lean
+/-- **Partial theorem.** If `0 < u < v < w`, `u² + v² = w²` and `(u, v, w)` is not a multiple of
+`(3, 4, 5)`, then in every `Dissection u v w` exactly one piece goes to the `u × u` square. -/
+theorem one_piece_to_u (u v w : Nat) (hu : 0 < u) (huv : u < v) (hvw : v < w)
+    (hp : u * u + v * v = w * w) (hn : ¬ ∃ k, u = 3 * k ∧ v = 4 * k ∧ w = 5 * k)
+    (D : Dissection u v w) :
+    ((List.finRange 4).filter (fun k => D.toU k)).length = 1 :=
+```
+
+It combines two theorems, split by the number of pieces that go to the `u × u` square. Zero or four
+pieces cannot be, because one square would not be covered.
+
+- **2+2**: `Ex89.T22.no_two_two` in [`Ex89/T22/Main.lean`](Ex89/T22/Main.lean). After a
+  normalization the dissection becomes a set of integer conditions on 11 parameters, in one of 304
+  cases. Each case has a list of lemmas, each lemma a small structure of cells that contradicts the
+  bijection, and a certificate that the parameters cannot avoid all the lemmas of the case. The
+  lemmas and the certificates are data, checked by `native_decide`. Two families of thin cases are
+  proved by hand with a chain argument.
+- **3+1**: `Ex89.ThreeOne.no_three_one` in [`Ex89/ThreeOne.lean`](Ex89/ThreeOne.lean). This is a
+  proof by hand: the three pieces that go to the `u × u` square map strips of the `w × w` square to
+  bands of rows, and the numbers of cells in each row of the `u × u` square give a contradiction.
+  It uses no `native_decide`.
+
+[`PROOF.md`](PROOF.md) explains both proofs. No assumption on `gcd(u, v)` is made, and the pieces
+need not be connected. The case 1+3 is not covered, and for `Dissection` it is not always
+impossible: the search that came before this proof found disconnected dissections of this form for
+`(28, 45, 53)` and `(33, 56, 65)` (see [A stronger statement](#a-stronger-statement)), and by this
+theorem they are 1+3. So a proof of the case 1+3 must use connectivity.
+
 ## The definitions have examples
 
 [`Ex89/Witness.lean`](Ex89/Witness.lean) gives the rookwise connected dissection of the `5 × 5` square
@@ -287,6 +326,20 @@ Three parts of the compiled program are not seen by the proofs, and they are als
 - [`Ex89/Oracle.lean`](Ex89/Oracle.lean) uses `partial`. The proofs do not depend on its results, so a
   bug there can only make the search fail or not terminate.
 
+For the partial theorem, `#print axioms Ex89.one_piece_to_u` gives
+
+```
+[propext, Classical.choice, Quot.sound, Ex89.T22.resOK_true._native.native_decide.ax_1_1]
+```
+
+The last axiom says `resOK = true`: the residual certificates of all 304 cases of the 2+2 theorem
+check, and every case has its table. The 3+1 theorem uses no `native_decide`. The lemma data and
+the certificates are the files in `data/`, read by `include_str` and parsed by `partial` functions
+in [`Ex89/T22/Parse.lean`](Ex89/T22/Parse.lean) and [`Ex89/T22/Residual.lean`](Ex89/T22/Residual.lean).
+Nothing is proved about the parsers, and nothing needs to be: the soundness theorems hold for every
+lemma and every certificate, so a wrong parse can only make `resOK` false or fail to terminate. The
+programs that produced the data are not in this repository.
+
 The search program is [`Ex89/Check.lean`](Ex89/Check.lean). As a regression test,
 `lake exe gate4 u v w` reports `checkR u v w = false` for `(3, 4, 5)`, `(5, 12, 13)`,
 `(8, 15, 17)` and `(12, 16, 20)`, which have dissections, and `true` for `(20, 21, 29)`. This
@@ -317,13 +370,21 @@ threads were busy for about ten minutes; after that one thread worked alone, for
 with every placement of the other two, and the placements that need the long test are not spread
 evenly over those tasks.
 
+The partial theorem was built on a different machine: one Intel Xeon Platinum 8375C processor with
+16 physical cores and 123 GB of memory, with `LEAN_NUM_THREADS=8`. Building
+`Ex89.T22.Main`, where `native_decide` checks the 304 residual certificates, took 337 s of wall time
+and 337 s of CPU time, with at most 8.6 GB of memory. The other modules of the 2+2 proof take about
+65 s together, and the five modules of the 3+1 proof about 25 s. The data files have 5.3 MB of
+lemmas and 92.5 MB of certificates.
+
 The numbers of placements come from an earlier C search for the same problem. That program is not
 in this repository, and no theorem depends on it. The Lean search does not print these totals.
 
 ## Build
 
 ```
-lake build Ex89                # all proofs that do not run a large search
+lake build Ex89                # all proofs that do not run a large search, and the 3+1 theorem
+lake build Ex89.Partial        # the partial theorem, with the 2+2 theorem
 lake build Ex89.Main           # (20, 21, 29)
 lake build Ex89.Main40         # (40, 42, 58)
 lake build Ex89.Main48         # (48, 55, 73)
